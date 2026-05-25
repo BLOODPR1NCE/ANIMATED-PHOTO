@@ -1,234 +1,134 @@
-# api.py - ИСПРАВЛЕННЫЕ ПУТИ К МОДЕЛИ
+# api.py
+import os, tempfile, subprocess
+import numpy as np, cv2, librosa, dlib, imageio
+import torch, torch.nn as nn
 from fastapi import FastAPI, File, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
-import torch
-import numpy as np
-import cv2
-import tempfile
-import os
-from pathlib import Path
-import librosa
-import dlib
-import subprocess
-import imageio
-from typing import List, Optional
-import warnings
-warnings.filterwarnings('ignore')
 
-class LipSyncModel(torch.nn.Module):
-    def __init__(self, input_dim=13, hidden_dim=256, output_dim=136):
+# ============ МОДЕЛЬ ============
+class LipSyncModel(nn.Module):
+    def __init__(self, in_dim=13, hid=256, out_dim=136):
         super().__init__()
-        self.audio_encoder = torch.nn.Sequential(
-            torch.nn.Linear(input_dim, hidden_dim), torch.nn.ReLU(), torch.nn.Dropout(0.2),
-            torch.nn.Linear(hidden_dim, hidden_dim), torch.nn.ReLU()
-        )
-        self.lstm = torch.nn.LSTM(hidden_dim, hidden_dim, 2, batch_first=True, dropout=0.2, bidirectional=True)
-        self.decoder = torch.nn.Sequential(
-            torch.nn.Linear(hidden_dim*2, 512), torch.nn.ReLU(), torch.nn.Dropout(0.3),
-            torch.nn.Linear(512, 256), torch.nn.ReLU(),
-            torch.nn.Linear(256, output_dim), torch.nn.Tanh()
-        )
-        
+        self.enc = nn.Sequential(nn.Linear(in_dim,hid), nn.ReLU(), nn.Dropout(.2), nn.Linear(hid,hid), nn.ReLU())
+        self.lstm = nn.LSTM(hid, hid, 2, batch_first=True, dropout=.2, bidirectional=True)
+        self.dec = nn.Sequential(nn.Linear(hid*2,512), nn.ReLU(), nn.Dropout(.3), nn.Linear(512,256), nn.ReLU(), nn.Linear(256,out_dim), nn.Tanh())
     def forward(self, x):
-        x = self.audio_encoder(x)
-        x, _ = self.lstm(x)
-        return self.decoder(x.mean(dim=1))
+        x = self.enc(x); x, _ = self.lstm(x)
+        return self.dec(x.mean(1))
 
-class FaceWarper:
+# ============ АНИМАТОР ============
+class AvatarService:
     def __init__(self):
         self.detector = dlib.get_frontal_face_detector()
-        self.predictor_path = self._get_predictor_path()
-        self.predictor = dlib.shape_predictor(self.predictor_path) if self.predictor_path else None
-    
-    @staticmethod
-    def _get_predictor_path() -> Optional[str]:
-        possible_paths = [
-            "./data/shape_predictor_68_face_landmarks.dat",
-            "shape_predictor_68_face_landmarks.dat",
-            os.path.expanduser("~/shape_predictor_68_face_landmarks.dat")
-        ]
-        return next((p for p in possible_paths if os.path.exists(p)), None)
-    
-    def detect_landmarks(self, image: np.ndarray) -> Optional[np.ndarray]:
-        if not self.predictor: return None
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        faces = self.detector(gray)
-        if not faces: return None
-        landmarks = self.predictor(gray, faces[0])
-        return np.array([[landmarks.part(i).x, landmarks.part(i).y] for i in range(68)])
-    
-    def warp_face(self, image, src_landmarks, dst_landmarks):
-        if src_landmarks is None or dst_landmarks is None: return image
-        h, w = image.shape[:2]
-        grid_x, grid_y = np.meshgrid(np.arange(w), np.arange(h))
-        map_x, map_y = grid_x.astype(np.float32), grid_y.astype(np.float32)
+        self.predictor = None
+        for p in ["shape_predictor_68_face_landmarks.dat", "./data/shape_predictor_68_face_landmarks.dat"]:
+            if os.path.exists(p):
+                self.predictor = dlib.shape_predictor(p)
+                break
         
-        for src, dst in zip(src_landmarks, dst_landmarks):
-            displacement = dst - src
-            dist = np.sqrt((grid_x - src[0])**2 + (grid_y - src[1])**2)
-            weight = np.clip(np.exp(-dist**2 / (2 * 50**2)), 0, 1)
-            map_x += displacement[0] * weight
-            map_y += displacement[1] * weight
-        
-        return cv2.remap(image, map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT)
-    
-    def create_lip_animation(self, image, audio_energy):
-        src_landmarks = self.detect_landmarks(image)
-        if src_landmarks is None: return [image] * len(audio_energy)
-        
-        frames = []
-        for energy in audio_energy:
-            frame = image.copy()
-            current = src_landmarks.copy()
-            mouth_open = min(0.8, 0.1 + energy * 1.2)
-            
-            for i in range(48, 60):
-                offset = 15 if i < 54 else -15
-                current[i][1] = src_landmarks[i][1] + offset * mouth_open
-            for i in range(60, 68):
-                offset = 12 if i < 64 else -12
-                current[i][1] = src_landmarks[i][1] + offset * mouth_open
-            if np.random.random() < 0.05:
-                for i in range(36, 48):
-                    current[i][1] = src_landmarks[i][1] + 8
-            
-            frames.append(self.warp_face(frame, src_landmarks, current))
-        return frames
-
-
-class DigitalAvatarService:
-    def __init__(self):
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.face_warper = FaceWarper()
         self.model = None
-        
-        model_paths = [
-            'best_lipsync_model.pth',           # train_lipsync_model.py сохраняет сюда
-            'final_lipsync_model.pth',
-        ]
-        
-        for model_path in model_paths:
-            if os.path.exists(model_path):
+        for mp in ['final_lipsync_model.pth', 'best_lipsync_model.pth']:
+            if os.path.exists(mp):
                 try:
-                    checkpoint = torch.load(model_path, map_location=self.device)
-                    state_dict = checkpoint.get('model_state_dict', checkpoint)
-                    
-                    if 'decoder.5.weight' in state_dict:
-                        out_dim = state_dict['decoder.5.weight'].shape[0]
-                        hid_dim = state_dict['audio_encoder.0.weight'].shape[0]
-                        self.model = LipSyncModel(13, hid_dim, out_dim).to(self.device)
-                        self.model.load_state_dict(state_dict)
-                    
-                    if self.model:
-                        self.model.eval()
-                        print(f"✅ Модель загружена из {model_path}")
-                        break
-                except Exception as e:
-                    print(f"⚠️ Ошибка загрузки {model_path}: {e}")
-        
-        if not self.model:
-            print("⚠️ Модель не загружена, использую energy-based анимацию")
+                    ck = torch.load(mp, map_location='cpu')['model_state_dict']
+                    out_dim = ck['dec.5.weight'].shape[0]
+                    hid = ck['enc.0.weight'].shape[0]
+                    self.model = LipSyncModel(13, hid, out_dim)
+                    self.model.load_state_dict(ck)
+                    self.model.eval()
+                    break
+                except: pass
     
-    def extract_audio_energy(self, audio_path: str) -> List[float]:
+    def _landmarks(self, img):
+        if not self.predictor: return None
+        faces = self.detector(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+        if not faces: return None
+        l = self.predictor(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), faces[0])
+        return np.array([[l.part(i).x, l.part(i).y] for i in range(68)])
+    
+    def _energy(self, path, fps=25):
+        y, sr = librosa.load(path, sr=16000)
+        n = max(30, int(len(y)/sr * fps))
+        e = [np.sqrt(np.mean(y[i:i+int(sr*.04)]**2)) for i in range(0, len(y)-int(sr*.04), int(sr*.02))]
+        if e:
+            e = np.clip(np.array(e)/max(e)*2, 0.1, 1.0)
+            from scipy.ndimage import gaussian_filter1d as gf
+            e = gf(e, sigma=2)
+        idx = np.linspace(0, len(e)-1, n).astype(int) if len(e)>0 else range(n)
+        return [float(e[i]) if i<len(e) else .5 for i in idx]
+    
+    def animate(self, img_path, aud_path, out_path):
+        img = cv2.imread(img_path)
+        src = self._landmarks(img)
+        if src is None: return None
+        
+        energy = self._energy(aud_path)
+        frames = []
+        for e in energy:
+            dst = src.copy()
+            mo = min(.8, .1+e*1.2)
+            for i in range(48,60): dst[i,1] = src[i,1] + (15 if i<54 else -15)*mo
+            for i in range(60,68): dst[i,1] = src[i,1] + (12 if i<64 else -12)*mo
+            
+            h, w = img.shape[:2]
+            gx, gy = np.meshgrid(np.arange(w,dtype=np.float32), np.arange(h,dtype=np.float32))
+            mx, my = gx.copy(), gy.copy()
+            for s, d in zip(src, dst):
+                disp = d-s
+                wgt = np.clip(np.exp(-((gx-s[0])**2+(gy-s[1])**2)/(2*50**2)), 0, 1)
+                mx += disp[0]*wgt; my += disp[1]*wgt
+            frames.append(cv2.cvtColor(cv2.remap(img.copy(), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT), cv2.COLOR_BGR2RGB))
+        
+        # Сохраняем видео
         try:
-            y, sr = librosa.load(audio_path, sr=16000)
-            frame_length, hop_length = int(sr * 0.04), int(sr * 0.02)
-            energy = [np.sqrt(np.mean(y[i:i+frame_length]**2)) for i in range(0, len(y) - frame_length, hop_length)]
-            
-            if energy:
-                energy = np.array(energy)
-                if energy.max() > 0: energy = energy / energy.max()
-                energy = np.clip(energy, 0.1, 1.0)
-                from scipy.ndimage import gaussian_filter1d
-                energy = gaussian_filter1d(energy, sigma=2)
-            
-            num_frames = 30
-            indices = np.linspace(0, len(energy) - 1, num_frames) if len(energy) > 0 else np.zeros(num_frames)
-            return [float(energy[int(idx)]) if 0 <= int(idx) < len(energy) else 0.5 for idx in indices]
+            from moviepy.editor import ImageSequenceClip, AudioFileClip
+            v = ImageSequenceClip(frames, fps=25); a = AudioFileClip(aud_path)
+            v.set_audio(a).write_videofile(out_path, codec='libx264', audio_codec='aac', fps=25, verbose=False, logger=None)
         except:
-            return [0.5] * 30
-    
-    def generate_animation(self, image_path: str, audio_path: str, output_path: str) -> Optional[str]:
-        image = cv2.imread(image_path)
-        audio_energy = self.extract_audio_energy(audio_path)
-        frames = self.face_warper.create_lip_animation(image, audio_energy) or [image] * len(audio_energy)
-        
-        try:
-            resized_frames = []
-            for frame in frames:
-                if frame.shape[1] > 800:
-                    scale = 800 / frame.shape[1]
-                    frame = cv2.resize(frame, (800, int(frame.shape[0] * scale)))
-                resized_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
-            
-            try:
-                from moviepy.editor import ImageSequenceClip, AudioFileClip
-                video = ImageSequenceClip(resized_frames, fps=25)
-                audio = AudioFileClip(audio_path)
-                final = video.set_audio(audio)
-                final.write_videofile(output_path, codec='libx264', audio_codec='aac', fps=25, verbose=False, logger=None)
-                video.close(); audio.close()
-            except:
-                temp = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-                imageio.mimsave(temp, resized_frames, fps=25, codec='libx264')
-                subprocess.run(['ffmpeg','-y','-i',temp,'-i',audio_path,'-c:v','copy','-c:a','aac','-shortest',output_path], capture_output=True)
-                os.unlink(temp)
-            
-            return output_path
-        except Exception as e:
-            print(f"Ошибка сохранения: {e}")
-            return None
+            t = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+            imageio.mimsave(t, frames, fps=25, codec='libx264')
+            subprocess.run(['ffmpeg','-y','-i',t,'-i',aud_path,'-c:v','copy','-c:a','aac','-shortest',out_path], capture_output=True)
+            os.unlink(t)
+        return out_path
 
-
-async def text_to_speech(text: str, voice: str = "male") -> Optional[str]:
-    path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3').name
+# ============ TTS ============
+async def tts(text, voice="male"):
+    p = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3').name
     try:
         import edge_tts
-        voices = {"male": "ru-RU-DmitryNeural", "female": "ru-RU-SvetlanaNeural", "male_low": "ru-RU-DmitryNeural"}
-        v = voices.get(voice, "ru-RU-DmitryNeural")
-        rate = "-30%" if "low" in voice else "+0%"
-        await edge_tts.Communicate(text=text, voice=v, rate=rate).save(path)
-        if os.path.exists(path) and os.path.getsize(path) > 500: return path
+        await edge_tts.Communicate(text=text, voice={"male":"ru-RU-DmitryNeural","female":"ru-RU-SvetlanaNeural"}[voice]).save(p)
+        if os.path.getsize(p)>500: return p
     except: pass
     try:
-        from gtts import gTTS
-        gTTS(text=text, lang='ru').save(path)
-        if os.path.getsize(path) > 500: return path
+        from gtts import gTTS; gTTS(text=text, lang='ru').save(p)
+        if os.path.getsize(p)>500: return p
     except: pass
     return None
 
-
-app = FastAPI(title="DigitalAvatar API")
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
-service = DigitalAvatarService()
+# ============ API ============
+app = FastAPI()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+svc = AvatarService()
 
 @app.post("/generate")
-async def generate_animation(photo: UploadFile = File(...), text: str = Form("Привет!"), voice: str = Form("male")):
-    temp_files = []
+async def gen(photo: UploadFile = File(...), text: str = Form("Привет!"), voice: str = Form("male")):
+    t = []
     try:
-        img_path = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg').name
-        temp_files.append(img_path)
-        with open(img_path, 'wb') as f: f.write(await photo.read())
-        
-        audio_path = await text_to_speech(text, voice)
-        if not audio_path: return JSONResponse({"error": "Не удалось создать речь"}, 500)
-        temp_files.append(audio_path)
-        
-        output_path = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
-        temp_files.append(output_path)
-        
-        result = service.generate_animation(img_path, audio_path, output_path)
-        if result and os.path.exists(result):
-            return FileResponse(result, media_type="video/mp4", filename="avatar.mp4")
-        return JSONResponse({"error": "Ошибка создания анимации"}, 500)
+        img = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg').name; t.append(img)
+        with open(img,'wb') as f: f.write(await photo.read())
+        aud = await tts(text, voice)
+        if not aud: return JSONResponse({"error":"TTS"}, 500)
+        t.append(aud)
+        out = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
+        r = svc.animate(img, aud, out)
+        return FileResponse(r, media_type="video/mp4") if r else JSONResponse({"error":"Failed"}, 500)
     finally:
-        for f in temp_files[:2]:
-            try:
-                if os.path.exists(f): os.unlink(f)
+        for f in t:
+            try: os.unlink(f)
             except: pass
 
 if __name__ == "__main__":
-    print("🚀 DigitalAvatar API - http://localhost:8000")
+    print("🚀 http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
