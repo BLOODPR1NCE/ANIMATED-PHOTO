@@ -1,7 +1,6 @@
-# dataset_generator.py
+# dataset_generator_audio_text.py
 import json, random, os, re
 from pathlib import Path
-import numpy as np
 from gtts import gTTS
 
 TEMPLATES = {
@@ -53,12 +52,10 @@ def synthesize(data, audio_dir):
     audio_dir.mkdir(parents=True, exist_ok=True)
     print(f"Синтез речи для {len(data)} текстов...")
     for i, item in enumerate(data):
-        try:
-            path = str(audio_dir / f"{item['id']}.mp3")
-            if not os.path.exists(path):
-                gTTS(text=item['text'], lang='en', slow=False).save(path)
-            if (i+1) % 25 == 0: print(f"  ✓ {i+1}/{len(data)}")
-        except Exception as e: print(f"  ✗ {item['id']}: {e}")
+        path = str(audio_dir / f"{item['id']}.mp3")
+        if not os.path.exists(path):
+            gTTS(text=item['text'], lang='en', slow=False).save(path)
+        if (i+1) % 25 == 0: print(f"  ✓ {i+1}/{len(data)}")
 
 def analyze(data, out_dir):
     counts = {}
@@ -68,7 +65,6 @@ def analyze(data, out_dir):
     meta = {
         "dataset_name": "Synthetic Speech Queries",
         "total": len(data), "categories": counts,
-        "avg_text_len": round(np.mean([len(item['text'].split()) for item in data]), 1),
         "total_words": len(words), "unique_words": len(set(words)),
         "tts": "gTTS", "format": "MP3"
     }

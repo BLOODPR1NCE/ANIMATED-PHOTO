@@ -1,0 +1,21 @@
+# requirements.txt
+numpy
+opencv-python
+pillow
+requests
+tqdm
+librosa
+soundfile
+gtts
+edge-tts
+torch
+torchvision
+scikit-learn
+scipy
+dlib
+matplotlib
+fastapi
+uvicorn
+python-multipart
+moviepy
+imageio

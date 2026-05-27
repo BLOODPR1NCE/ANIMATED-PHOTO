@@ -67,10 +67,6 @@ class AvatarGUI:
                 self.root.after(0, self._save, temp)
             else:
                 self.root.after(0, lambda: messagebox.showerror("Ошибка", r.json().get('error','Ошибка')))
-        except requests.exceptions.ConnectionError:
-            self.root.after(0, lambda: messagebox.showerror("Ошибка", "Запустите API: python api.py"))
-        except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Ошибка", str(e)))
         finally:
             self.root.after(0, lambda: self.btn.config(state=tk.NORMAL, text="🎬 Создать видео"))
     

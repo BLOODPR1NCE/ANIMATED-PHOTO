@@ -7,7 +7,6 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
-# ============ МОДЕЛЬ ============
 class LipSyncModel(nn.Module):
     def __init__(self, in_dim=13, hid=256, out_dim=136):
         super().__init__()
@@ -18,15 +17,10 @@ class LipSyncModel(nn.Module):
         x = self.enc(x); x, _ = self.lstm(x)
         return self.dec(x.mean(1))
 
-# ============ АНИМАТОР ============
 class AvatarService:
     def __init__(self):
         self.detector = dlib.get_frontal_face_detector()
-        self.predictor = None
-        for p in ["shape_predictor_68_face_landmarks.dat", "./data/shape_predictor_68_face_landmarks.dat"]:
-            if os.path.exists(p):
-                self.predictor = dlib.shape_predictor(p)
-                break
+        self.predictor = dlib.shape_predictor("shape_predictor_68_face_landmarks.dat")
         
         self.model = None
         for mp in ['final_lipsync_model.pth', 'best_lipsync_model.pth']:
@@ -42,13 +36,12 @@ class AvatarService:
                 except: pass
     
     def _landmarks(self, img):
-        if not self.predictor: return None
         faces = self.detector(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
         if not faces: return None
         l = self.predictor(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), faces[0])
         return np.array([[l.part(i).x, l.part(i).y] for i in range(68)])
     
-    def _energy(self, path, fps=25):
+    def _energy(self, path, fps=30):
         y, sr = librosa.load(path, sr=16000)
         n = max(30, int(len(y)/sr * fps))
         e = [np.sqrt(np.mean(y[i:i+int(sr*.04)]**2)) for i in range(0, len(y)-int(sr*.04), int(sr*.02))]
@@ -81,7 +74,6 @@ class AvatarService:
                 mx += disp[0]*wgt; my += disp[1]*wgt
             frames.append(cv2.cvtColor(cv2.remap(img.copy(), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT), cv2.COLOR_BGR2RGB))
         
-        # Сохраняем видео
         try:
             from moviepy.editor import ImageSequenceClip, AudioFileClip
             v = ImageSequenceClip(frames, fps=25); a = AudioFileClip(aud_path)
@@ -93,7 +85,6 @@ class AvatarService:
             os.unlink(t)
         return out_path
 
-# ============ TTS ============
 async def tts(text, voice="male"):
     p = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3').name
     try:
@@ -101,13 +92,8 @@ async def tts(text, voice="male"):
         await edge_tts.Communicate(text=text, voice={"male":"ru-RU-DmitryNeural","female":"ru-RU-SvetlanaNeural"}[voice]).save(p)
         if os.path.getsize(p)>500: return p
     except: pass
-    try:
-        from gtts import gTTS; gTTS(text=text, lang='ru').save(p)
-        if os.path.getsize(p)>500: return p
-    except: pass
     return None
 
-# ============ API ============
 app = FastAPI()
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 svc = AvatarService()

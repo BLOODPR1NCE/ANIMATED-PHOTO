@@ -1,4 +1,4 @@
-# dataset_images.py
+# dataset_generator_image.py
 import os, json, time, random, threading
 from pathlib import Path
 from PIL import Image
@@ -8,7 +8,6 @@ from tqdm import tqdm
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 def download_face(gender):
-    """Скачивает одно фото."""
     try:
         url = f"https://randomuser.me/api/portraits/{'men' if gender=='male' else 'women'}/{random.randint(0,99)}.jpg"
         r = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
@@ -20,7 +19,6 @@ def download_face(gender):
     return None, None
 
 def generate_dataset(target_gb=0.5, out_dir="./gender_faces"):
-    """Генерирует датасет."""
     out = Path(out_dir)
     for f in ["male", "female"]: (out / "images" / f).mkdir(parents=True, exist_ok=True)
     
@@ -30,7 +28,7 @@ def generate_dataset(target_gb=0.5, out_dir="./gender_faces"):
     metadata = []
     lock = threading.Lock()
     
-    print(f"Генерация датасета: {target_gb} ГБ\nИсточник: randomuser.me")
+    print(f"Генерация датасета: {target_gb} ГБ")
     pbar = tqdm(total=target, unit='B', unit_scale=True, desc="Загрузка")
     
     with ThreadPoolExecutor(max_workers=8) as ex:
@@ -52,7 +50,6 @@ def generate_dataset(target_gb=0.5, out_dir="./gender_faces"):
     
     pbar.close()
     
-    # Сохранение
     analysis = {
         "total": total_photos, "size_gb": round(total_size/1024**3, 2),
         "male": counts['male'], "female": counts['female'],

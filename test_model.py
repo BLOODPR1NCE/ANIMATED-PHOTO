@@ -3,7 +3,6 @@ import os, sys, tempfile, numpy as np, torch, librosa, soundfile as sf
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def load_model():
-    """Загружает модель (общая функция для всех тестов)."""
     for p in ['final_lipsync_model.pth', 'best_lipsync_model.pth']:
         if os.path.exists(p):
             from train_lipsync_model import LipSyncModel
