@@ -21,7 +21,8 @@ class AvatarGUI:
         tk.Button(root, text="📷 С камеры", command=self.camera, bg='#2196F3', fg='white', font=("Arial", 11), padx=20, pady=8).pack(pady=5)
         
         tk.Label(root, text="Текст:", bg='#f0f0f0').pack(anchor='w', padx=20)
-        self.text = tk.Text(root, height=3, font=("Arial", 11)); self.text.pack(pady=5, padx=20, fill='x')
+        self.text = tk.Text(root, height=3, font=("Arial", 11))
+        self.text.pack(pady=5, padx=20, fill='x')
         self.text.insert('1.0', 'Привет! Это мой аватар!')
         
         # Голос
@@ -37,13 +38,18 @@ class AvatarGUI:
     def camera(self):
         try:
             import cv2
-            cap = cv2.VideoCapture(0); ret, frame = cap.read(); cap.release()
+            cap = cv2.VideoCapture(0);
+            ret, frame = cap.read();
+            cap.release()
             if ret:
-                self.photo_path = "photo.jpg"; cv2.imwrite(self.photo_path, frame)
+                self.photo_path = "photo.jpg";
+                cv2.imwrite(self.photo_path, frame)
                 self.btn.config(state=tk.NORMAL)
-                img = Image.open(self.photo_path); img.thumbnail((300, 300))
+                img = Image.open(self.photo_path);
+                img.thumbnail((300, 300))
                 photo = ImageTk.PhotoImage(img)
-                self.preview.config(image=photo, text=''); self.preview.image = photo
+                self.preview.config(image=photo, text='');
+                self.preview.image = photo
         except:
             messagebox.showerror("Ошибка", "pip install opencv-python")
     

@@ -71,12 +71,14 @@ class AvatarService:
             for s, d in zip(src, dst):
                 disp = d-s
                 wgt = np.clip(np.exp(-((gx-s[0])**2+(gy-s[1])**2)/(2*50**2)), 0, 1)
-                mx += disp[0]*wgt; my += disp[1]*wgt
+                mx += disp[0]*wgt
+                my += disp[1]*wgt
             frames.append(cv2.cvtColor(cv2.remap(img.copy(), mx, my, cv2.INTER_LINEAR, borderMode=cv2.BORDER_REFLECT), cv2.COLOR_BGR2RGB))
         
         try:
             from moviepy.editor import ImageSequenceClip, AudioFileClip
-            v = ImageSequenceClip(frames, fps=25); a = AudioFileClip(aud_path)
+            v = ImageSequenceClip(frames, fps=25)
+            a = AudioFileClip(aud_path)
             v.set_audio(a).write_videofile(out_path, codec='libx264', audio_codec='aac', fps=25, verbose=False, logger=None)
         except:
             t = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4').name
@@ -102,7 +104,8 @@ svc = AvatarService()
 async def gen(photo: UploadFile = File(...), text: str = Form("Привет!"), voice: str = Form("male")):
     t = []
     try:
-        img = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg').name; t.append(img)
+        img = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg').name;
+        t.append(img)
         with open(img,'wb') as f: f.write(await photo.read())
         aud = await tts(text, voice)
         if not aud: return JSONResponse({"error":"TTS"}, 500)
