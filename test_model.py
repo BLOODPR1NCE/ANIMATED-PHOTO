@@ -1,5 +1,7 @@
 # test_model.py
 import os, sys, tempfile, numpy as np, torch, librosa, soundfile as sf
+from datetime import datetime
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 def load_model():
@@ -14,88 +16,107 @@ def load_model():
             return model, p
     return None, None
 
-# ТЕСТ 1: Модель загружается
+# ТЕСТ 1: Файл модели существует
 def test_1():
-    print("\nТЕСТ 1: Загрузка модели")
-    model, path = load_model()
-    if model:
-        print(f"✅ Загружена из {path} ({os.path.getsize(path)//1024} KB)")
-        return True
-    print("❌ Модель не найдена"); return False
+    for p in ['final_lipsync_model.pth', 'best_lipsync_model.pth']:
+        if os.path.exists(p):
+            size_kb = os.path.getsize(p) // 1024
+            return True, f"Файл: {p} ({size_kb} KB)"
+    return False, "Модель не найдена"
 
-# ТЕСТ 2: Модель делает предсказание
+# ТЕСТ 2: Модель загружается и выдает правильную размерность
 def test_2():
-    print("\nТЕСТ 2: Предсказание")
-    model, _ = load_model()
-    if not model: return False
-    x = torch.randn(1, 100, 13)
-    with torch.no_grad(): y = model(x)
-    print(f"✅ Вход: {x.shape} → Выход: {y.shape}")
-    return y.shape[1] > 0
+    model, path = load_model()
+    if not model: return False, "Не загрузилась"
+    
+    # Подаем случайные данные
+    x = torch.randn(1, 100, 13)  # 1 батч, 100 кадров, 13 MFCC
+    with torch.no_grad():
+        y = model(x)
+    
+    # Проверяем что выход = 136 (68 точек × 2 координаты)
+    ok = y.shape[1] == 136
+    return ok, f"Вход: {x.shape} → Выход: {y.shape}"
 
-# ТЕСТ 3: Модель работает с аудио
+# ТЕСТ 3: Модель работает с реальным аудио
 def test_3():
-    print("\nТЕСТ 3: Работа с аудио")
     model, _ = load_model()
-    if not model: return False
+    if not model: return False, "Нет модели"
     
-    # Создаем аудио
+    # Создаем тестовый звук (2 секунды, 440 Гц)
     sr = 16000
-    audio = np.sin(2*np.pi*200*np.linspace(0,2,int(sr*2)))*0.5
+    audio = np.sin(2*np.pi*440*np.linspace(0,2,int(sr*2)))*0.5
     path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
     sf.write(path, audio, sr)
     
-    # MFCC
+    # Извлекаем MFCC
     y, _ = librosa.load(path, sr=sr)
     mfcc = torch.FloatTensor(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13).T).unsqueeze(0)
     
-    with torch.no_grad(): out = model(mfcc)
-    print(f"✅ Аудио {len(y)/sr:.1f}с → Предсказание: {out.shape}")
+    # Предсказание
+    with torch.no_grad():
+        out = model(mfcc)
+    
     os.unlink(path)
-    return True
+    return True, f"Аудио 2с → Предсказано {out.shape[1]} точек"
 
-# ТЕСТ 4: Сравнение с energy
+# ТЕСТ 4: Разные входы дают РАЗНЫЕ выходы
 def test_4():
-    print("\nТЕСТ 4: Модель vs Energy")
     model, _ = load_model()
-    if not model: return False
+    if not model: return False, "Нет модели"
     
-    sr = 16000
-    t = np.linspace(0, 2, int(sr*2))
-    audio = np.sin(2*np.pi*300*t) * np.sin(2*np.pi*4*t) * 0.5
-    path = tempfile.NamedTemporaryFile(suffix='.wav', delete=False).name
-    sf.write(path, audio, sr)
+    # Два РАЗНЫХ случайных входа
+    x1 = torch.randn(1, 50, 13)
+    x2 = torch.randn(1, 50, 13)  # другие числа
     
-    y, _ = librosa.load(path, sr=sr)
-    mfcc = torch.FloatTensor(librosa.feature.mfcc(y=y, sr=sr, n_mfcc=13).T).unsqueeze(0)
+    with torch.no_grad():
+        y1 = model(x1)
+        y2 = model(x2)
     
-    with torch.no_grad(): out = model(mfcc).numpy()[0]
+    # Выходы должны отличаться
+    diff = (y1 - y2).abs().mean().item()
+    different = diff > 0.01
     
-    # Исправленное извлечение энергии
-    flen = int(sr * 0.04)
-    hop = int(sr * 0.02)
-    energy = []
-    for i in range(0, len(y) - flen, hop):
-        energy.append(np.sqrt(np.mean(y[i:i+flen]**2)))
-    energy = np.array(energy)
-    if energy.max() > 0:
-        energy = energy / energy.max()
+    return different, f"Разница выходов: {diff:.4f} {'✓' if different else '✗'}"
+
+def save_xml(results):
+    """Сохраняет результаты тестов в XML."""
+    passed = sum(1 for _, (s, _) in results if s)
+    total = len(results)
     
-    # Приводим к одной длине
-    min_len = min(len(out), len(energy))
-    if min_len > 1:
-        corr = np.corrcoef(out[:min_len], energy[:min_len])[0,1]
-        print(f"✅ Корреляция: {corr:.3f}" + (" (есть связь!)" if abs(corr) > 0.1 else " (слабая)"))
-    else:
-        print("⚠️ Слишком мало данных для корреляции")
+    xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="LipSync Tests" tests="{total}" passed="{passed}" time="{datetime.now().isoformat()}">
+'''
+    for i, (name, (success, detail)) in enumerate(results):
+        xml += f'  <testcase name="Тест {i+1}: {name}" status="{"passed" if success else "failed"}">\n'
+        xml += f'    <system-out>{detail}</system-out>\n'
+        xml += '  </testcase>\n'
+    xml += '</testsuite>'
     
-    os.unlink(path)
-    return True
+    with open("test-results.xml", 'w', encoding='utf-8') as f:
+        f.write(xml)
+    print("✅ test-results.xml сохранен")
 
 if __name__ == "__main__":
-    print("="*40 + "\nТЕСТЫ МОДЕЛИ\n" + "="*40)
-    tests = [("Загрузка", test_1), ("Предсказание", test_2), ("Аудио", test_3), ("vs Energy", test_4)]
-    results = [(n, t()) for n, t in tests]
-    print("\n" + "="*40 + "\nИТОГИ\n" + "="*40)
-    for n, r in results: print(f"  {'✅' if r else '❌'} {n}")
-    print(f"\nПройдено: {sum(r for _,r in results)}/{len(results)}")
+    print("="*45)
+    print("ТЕСТЫ LipSync МОДЕЛИ")
+    print("="*45)
+    
+    tests = [
+        ("Файл модели", test_1),
+        ("Размерность", test_2),
+        ("Аудио", test_3),
+        ("Разные входы", test_4),
+    ]
+    
+    results = []
+    for name, func in tests:
+        ok, msg = func()
+        results.append((name, (ok, msg)))
+        print(f"  {'✅' if ok else '❌'} {name}: {msg}")
+    
+    passed = sum(1 for _, (ok, _) in results if ok)
+    print(f"\nПройдено: {passed}/{len(results)}")
+    
+    save_xml(results)
+    exit(0 if passed == 4 else 1)
