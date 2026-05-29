@@ -14,11 +14,11 @@ jobs:
     steps:
       # Шаг 1: Скачать код
       - name: Скачать код
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       
       # Шаг 2: Установить Python
       - name: Установить Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12.10'
       
@@ -34,7 +34,7 @@ jobs:
       # Шаг 5: Сохранить результат
       - name: Сохранить артефакты
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: test-results.xml
